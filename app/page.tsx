@@ -1,16 +1,89 @@
-import EmptyState from "@/components/ui/EmptyState";
-import PageHeader from "@/components/ui/PageHeader";
+import Link from 'next/link'
+import { supabase } from '@/lib/supabase'
+import { BUSINESS_ID } from '@/lib/config'
+import PageHeader from '@/components/ui/PageHeader'
+import Card from '@/components/ui/Card'
+import Badge from '@/components/ui/Badge'
+import EmptyState from '@/components/ui/EmptyState'
+import type { Quote, QuoteStatus, QuoteType } from '@/lib/types'
 
-export default function QuotesPage() {
+const TYPE_LABELS: Record<QuoteType, string> = {
+  asphalt: 'Asphalt',
+  concrete: 'Concrete',
+  both: 'Both',
+}
+
+const STATUS_LABELS: Record<QuoteStatus, string> = {
+  draft: 'Draft',
+  sent: 'Sent',
+  accepted: 'Accepted',
+}
+
+function fmt(n: number) {
+  return '$' + (n || 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+export default async function QuotesPage() {
+  const { data: quotes, error } = await supabase
+    .from('quotes')
+    .select('*')
+    .eq('business_id', BUSINESS_ID)
+    .order('created_at', { ascending: false })
+
+  if (error) console.error('Failed to load quotes:', error)
+
+  const list = (quotes as Quote[]) ?? []
+
   return (
     <div>
       <PageHeader title="Quotes" actionLabel="+" actionHref="/quotes/new" />
-      <div className="p-4">
-        <EmptyState
-          title="No quotes yet"
-          description="Tap + to create your first quote"
-        />
+
+      <div className="p-4 space-y-3">
+        {list.length === 0 ? (
+          <EmptyState
+            title="No quotes yet"
+            description="Tap + to create your first quote"
+          />
+        ) : (
+          list.map((quote) => {
+            const date = new Date(quote.created_at).toLocaleDateString('en-CA', {
+              month: 'short', day: 'numeric', year: 'numeric',
+            })
+            return (
+              <Link key={quote.id} href={`/quotes/${quote.id}`}>
+                <Card className="p-4 active:scale-[0.98] transition-transform">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-base font-semibold text-[#F5F5F5] truncate">
+                        {quote.customer_name || quote.address || 'Unnamed Quote'}
+                      </p>
+                      {quote.address && quote.customer_name && (
+                        <p className="text-sm text-[#888888] truncate mt-0.5">{quote.address}</p>
+                      )}
+                    </div>
+                    <p className="text-2xl font-bold text-[#3FA82A] shrink-0">
+                      {fmt(quote.total)}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
+                    <Badge variant={quote.quote_type as QuoteType}>
+                      {TYPE_LABELS[quote.quote_type]}
+                    </Badge>
+                    <Badge variant="default">
+                      {(quote.selected_tier || 'mid').toUpperCase()}
+                    </Badge>
+                    <Badge variant={quote.status as QuoteStatus}>
+                      {STATUS_LABELS[quote.status]}
+                    </Badge>
+                    <span className="ml-auto text-xs text-[#888888]">{date}</span>
+                  </div>
+                </Card>
+              </Link>
+            )
+          })
+        )}
       </div>
     </div>
-  );
+  )
 }

@@ -1,7 +1,6 @@
 "use client";
 import React from "react";
-
-export type Tier = "low" | "mid" | "high";
+import type { Tier } from "@/lib/types";
 
 type TierSelectorProps = {
   selected: Tier;

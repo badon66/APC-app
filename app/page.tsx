@@ -7,6 +7,9 @@ import Badge from '@/components/ui/Badge'
 import EmptyState from '@/components/ui/EmptyState'
 import type { Quote, QuoteStatus, QuoteType } from '@/lib/types'
 
+// Never cache — always fetch fresh quotes on every navigation
+export const dynamic = 'force-dynamic'
+
 const TYPE_LABELS: Record<QuoteType, string> = {
   asphalt: 'Asphalt',
   concrete: 'Concrete',
@@ -26,11 +29,9 @@ function fmt(n: number) {
 export default async function QuotesPage() {
   const { data: quotes, error } = await supabase
     .from('quotes')
-    .select('*')
+    .select('id, quote_type, selected_tier, total, status, created_at, customer_name, address, customer_phone, estimator_name')
     .eq('business_id', BUSINESS_ID)
     .order('created_at', { ascending: false })
-
-  if (error) console.error('Failed to load quotes:', error)
 
   const list = (quotes as Quote[]) ?? []
 
@@ -39,7 +40,12 @@ export default async function QuotesPage() {
       <PageHeader title="Quotes" actionLabel="+" actionHref="/quotes/new" />
 
       <div className="p-4 space-y-3">
-        {list.length === 0 ? (
+        {error ? (
+          <Card className="p-4">
+            <p className="text-sm font-semibold text-red-400 mb-1">Failed to load quotes</p>
+            <p className="text-xs text-[#888888] font-mono break-all">{error.message}</p>
+          </Card>
+        ) : list.length === 0 ? (
           <EmptyState
             title="No quotes yet"
             description="Tap + to create your first quote"

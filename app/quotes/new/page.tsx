@@ -1,10 +1,13 @@
-import { supabase } from '@/lib/supabase'
+import { supabaseServer } from '@/lib/supabase'
 import { BUSINESS_ID } from '@/lib/config'
 import QuoteForm from './QuoteForm'
 import type { ServiceRate } from '@/lib/types'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 export default async function NewQuotePage() {
-  const { data: rates, error } = await supabase
+  const { data: rates, error } = await supabaseServer
     .from('service_rates')
     .select('*')
     .eq('business_id', BUSINESS_ID)

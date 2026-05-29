@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { supabase } from '@/lib/supabase'
+import { supabaseServer } from '@/lib/supabase'
 import { BUSINESS_ID } from '@/lib/config'
 import PageHeader from '@/components/ui/PageHeader'
 import Card from '@/components/ui/Card'
@@ -8,6 +8,7 @@ import EmptyState from '@/components/ui/EmptyState'
 import type { Quote, QuoteStatus, QuoteType } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
+export const revalidate = 0
 
 const TYPE_LABELS: Record<QuoteType, string> = {
   asphalt: 'Asphalt',
@@ -26,7 +27,7 @@ function fmt(n: number) {
 }
 
 export default async function QuotesListPage() {
-  const { data: quotes, error } = await supabase
+  const { data: quotes, error } = await supabaseServer
     .from('quotes')
     .select('id, quote_type, selected_tier, total, status, created_at, customer_name, address, customer_phone, estimator_name')
     .eq('business_id', BUSINESS_ID)

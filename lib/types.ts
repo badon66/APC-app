@@ -22,6 +22,7 @@ export interface LineItem {
   service_name: string
   unit: string
   category: 'asphalt' | 'concrete'
+  tier?: Tier          // per-line selected tier
   volume: number
   rate_low: number
   rate_mid: number
@@ -29,6 +30,7 @@ export interface LineItem {
   total_low: number
   total_mid: number
   total_high: number
+  line_total?: number  // actual total at this line's tier
   is_other?: boolean
   description?: string
   flat_amount?: number

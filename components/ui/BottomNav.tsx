@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 
 const tabs = [
   {
-    href: "/",
+    href: "/quotes",
     label: "Quotes",
     icon: (active: boolean) => (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -93,7 +93,7 @@ export default function BottomNav() {
         {tabs.map((tab) => {
           const isActive =
             pathname === tab.href ||
-            (tab.href !== "/" && pathname.startsWith(tab.href));
+            pathname.startsWith(tab.href + '/');
           return (
             <Link
               key={tab.href}

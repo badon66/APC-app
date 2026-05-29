@@ -58,7 +58,7 @@ export default function QuoteDetail({ quote: initial }: { quote: Quote }) {
     setDeleting(true)
     const { error } = await supabase.from('quotes').delete()
       .eq('id', quote.id).eq('business_id', BUSINESS_ID)
-    if (!error) router.push('/')
+    if (!error) router.push('/quotes')
     else { alert('Delete failed.'); setDeleting(false); setShowDelete(false) }
   }
 
@@ -135,7 +135,7 @@ export default function QuoteDetail({ quote: initial }: { quote: Quote }) {
 
   return (
     <div className="min-h-screen bg-[#111111]">
-      <PageHeader title="Quote" backHref="/" />
+      <PageHeader title="Quote" backHref="/quotes" />
 
       <div className="p-4 space-y-4 pb-32">
 

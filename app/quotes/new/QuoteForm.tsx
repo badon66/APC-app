@@ -255,7 +255,7 @@ export default function QuoteForm({ rates, existingQuote }: Props) {
       } else {
         const { error } = await supabase.from('quotes').insert(payload)
         if (error) throw error
-        router.push('/')
+        router.push('/quotes')
       }
     } catch (err: unknown) {
       console.error('Save error:', err)

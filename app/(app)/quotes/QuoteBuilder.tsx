@@ -2,16 +2,17 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { Trash2, Plus, ChevronRight } from 'lucide-react'
+import { Trash2, Plus, ChevronRight, UserPlus } from 'lucide-react'
 import PageHeader from '@/components/ui/PageHeader'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
-import Select from '@/components/ui/Select'
 import Modal from '@/components/ui/Modal'
+import LocationButton from '@/components/ui/LocationButton'
+import PhotoUpload from '@/components/ui/PhotoUpload'
 import { supabase } from '@/lib/supabase'
 import { BUSINESS_ID } from '@/lib/config'
-import type { Tier, QuoteStatus } from '@/lib/config'
+import type { Tier, QuoteStatus, SurfaceType } from '@/lib/config'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ type ServiceRate = {
   id: string
   service_name: string
   unit: string
+  category: string
   rate_low: number
   rate_mid: number
   rate_high: number
@@ -29,45 +31,89 @@ type QuoteItem = {
   serviceRateId: string
   serviceName: string
   unit: string
+  category: string
   rateLow: number
   rateMid: number
   rateHigh: number
+  tier: Tier
   quantity: string
 }
 
+type Salesperson = { id: string; name: string }
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STATUS_OPTIONS = [
-  { value: 'quoted', label: 'Quoted' },
-  { value: 'thinking_about_it', label: 'Thinking About It' },
-  { value: 'sold', label: 'Sold' },
-  { value: 'not_interested', label: 'Not Interested' },
+const QUOTE_TYPES: { value: SurfaceType; label: string }[] = [
+  { value: 'asphalt', label: 'Asphalt' },
+  { value: 'concrete', label: 'Concrete' },
+  { value: 'both', label: 'Both' },
 ]
 
-const TIERS: { value: Tier; label: string; active: string }[] = [
-  { value: 'low', label: 'Low', active: 'bg-info/15 text-info border-info/30' },
-  { value: 'mid', label: 'Mid', active: 'bg-warning/15 text-warning border-warning/30' },
-  { value: 'high', label: 'High', active: 'bg-accent/15 text-accent border-accent/30' },
-]
+const STATUS_CYCLE: QuoteStatus[] = ['quoted', 'thinking_about_it', 'sold', 'not_interested']
 
-const INACTIVE_TIER = 'bg-transparent text-muted border-white/8 hover:bg-white/5'
+const STATUS_META: Record<QuoteStatus, { label: string; cls: string }> = {
+  quoted: { label: 'Quoted', cls: 'bg-info/15 text-info border-info/30' },
+  thinking_about_it: { label: 'Thinking About It', cls: 'bg-warning/15 text-warning border-warning/30' },
+  sold: { label: 'Sold', cls: 'bg-accent/15 text-accent border-accent/30' },
+  not_interested: { label: 'Not Interested', cls: 'bg-danger/15 text-danger border-danger/30' },
+}
+
+const PAYMENT_TYPES = ['Card', 'Cash', 'E-Transfer', 'Check', 'Other']
+
+const TIER_CYCLE: Tier[] = ['low', 'mid', 'high']
+
+const TIER_META: Record<Tier, { label: string; cls: string }> = {
+  low: { label: 'LOW', cls: 'bg-info/15 text-info border-info/30' },
+  mid: { label: 'MID', cls: 'bg-warning/15 text-warning border-warning/30' },
+  high: { label: 'HIGH', cls: 'bg-accent/15 text-accent border-accent/30' },
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getRate(item: QuoteItem, tier: Tier): number {
+function rateFor(item: QuoteItem, tier: Tier): number {
   if (tier === 'low') return item.rateLow
   if (tier === 'high') return item.rateHigh
   return item.rateMid
 }
 
+function lowerTier(tier: Tier): Tier {
+  if (tier === 'high') return 'mid'
+  if (tier === 'mid') return 'low'
+  return 'low'
+}
+
+function nextTier(tier: Tier): Tier {
+  return TIER_CYCLE[(TIER_CYCLE.indexOf(tier) + 1) % TIER_CYCLE.length]
+}
+
 function fmtRate(rate: number, unit: string): string {
   if (unit === 'lbs') return `$${rate.toFixed(2)}/lb`
   if (unit === 'ft') return `$${rate.toFixed(2)}/ft`
-  return `$${rate.toFixed(4)}/ft²`
+  return `$${rate.toFixed(2)}/sq ft`
 }
 
 function fmtMoney(n: number): string {
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return '$' + (Number.isFinite(n) ? n : 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+function num(s: string): number {
+  const n = parseFloat(s)
+  return Number.isFinite(n) ? n : 0
+}
+
+function matchesType(category: string, quoteType: SurfaceType): boolean {
+  if (quoteType === 'both') return true
+  if (quoteType === 'asphalt') return category === 'asphalt' || category === 'both'
+  return category === 'concrete' || category === 'both'
+}
+
+function todayLocal(): string {
+  const d = new Date()
+  const off = d.getTimezoneOffset()
+  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10)
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -80,45 +126,96 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
   const router = useRouter()
   const isEdit = !!quoteId
 
-  // Form
+  // Salesperson
+  const [salespersons, setSalespersons] = useState<Salesperson[]>([])
+  const [salesperson, setSalesperson] = useState('')
+  const [showAddSp, setShowAddSp] = useState(false)
+  const [newSpName, setNewSpName] = useState('')
+  const [savingSp, setSavingSp] = useState(false)
+
+  // Customer
   const [customerName, setCustomerName] = useState('')
   const [address, setAddress] = useState('')
-  const [tier, setTier] = useState<Tier>('mid')
-  const [status, setStatus] = useState<QuoteStatus>('quoted')
-  const [notes, setNotes] = useState('')
-  const [items, setItems] = useState<QuoteItem[]>([])
+  const [phone, setPhone] = useState('')
+  const [quoteDate, setQuoteDate] = useState(todayLocal())
 
-  // UI
+  // Quote type + services
+  const [quoteType, setQuoteType] = useState<SurfaceType>('asphalt')
+  const [services, setServices] = useState<ServiceRate[]>([])
+  const [items, setItems] = useState<QuoteItem[]>([])
+  const [showPicker, setShowPicker] = useState(false)
+
+  // Totals
+  const [subtotal, setSubtotal] = useState('')
+  const [discount, setDiscount] = useState('')
+  const [tax, setTax] = useState('')
+  const [taxManual, setTaxManual] = useState(false)
+  const [soldPrice, setSoldPrice] = useState('')
+
+  // Payment + status
+  const [paymentType, setPaymentType] = useState('')
+  const [paymentOther, setPaymentOther] = useState('')
+  const [status, setStatus] = useState<QuoteStatus>('quoted')
+
+  // Photos
+  const [asphaltFile, setAsphaltFile] = useState<File | null>(null)
+  const [concreteFile, setConcreteFile] = useState<File | null>(null)
+  const [asphaltUrl, setAsphaltUrl] = useState<string | null>(null)
+  const [concreteUrl, setConcreteUrl] = useState<string | null>(null)
+  const asphaltPreview = useMemo(() => (asphaltFile ? URL.createObjectURL(asphaltFile) : null), [asphaltFile])
+  const concretePreview = useMemo(() => (concreteFile ? URL.createObjectURL(concreteFile) : null), [concreteFile])
+
+  // Notes
+  const [notes, setNotes] = useState('')
+
+  // UI state
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-  const [confirmDel, setConfirmDel] = useState(false)
-  const [showPicker, setShowPicker] = useState(false)
-  const [services, setServices] = useState<ServiceRate[]>([])
+  const [existingJobId, setExistingJobId] = useState<string | null>(null)
   const [nameError, setNameError] = useState('')
   const [saveError, setSaveError] = useState('')
 
-  const total = useMemo(
-    () =>
-      items.reduce(
-        (sum, item) => sum + (parseFloat(item.quantity) || 0) * getRate(item, tier),
-        0
-      ),
-    [items, tier]
+  // ─── Derived totals ───────────────────────────────────────────────────────────
+
+  const suggested = useMemo(
+    () => items.reduce((s, it) => s + num(it.quantity) * rateFor(it, it.tier), 0),
+    [items]
   )
+  const suggestedLowest = useMemo(
+    () => items.reduce((s, it) => s + num(it.quantity) * rateFor(it, lowerTier(it.tier)), 0),
+    [items]
+  )
+  const finalQuote = useMemo(() => num(subtotal) - num(discount), [subtotal, discount])
+  const balanceDue = finalQuote + num(tax)
+
+  // Auto-tax (5% of final) unless manually overridden
+  useEffect(() => {
+    if (!taxManual) setTax(finalQuote ? (finalQuote * 0.05).toFixed(2) : '')
+  }, [finalQuote, taxManual])
+
+  // ─── Load ───────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    loadSalespersons()
     loadServices()
     if (isEdit) loadQuote()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ─── Data loading ───────────────────────────────────────────────────────────
+  async function loadSalespersons() {
+    const { data } = await supabase
+      .from('salespersons')
+      .select('id, name')
+      .eq('business_id', BUSINESS_ID)
+      .eq('active', true)
+      .order('name')
+    setSalespersons(data ?? [])
+  }
 
   async function loadServices() {
     const { data } = await supabase
       .from('service_rates')
-      .select('id, service_name, unit, rate_low, rate_mid, rate_high')
+      .select('id, service_name, unit, category, rate_low, rate_mid, rate_high')
       .eq('business_id', BUSINESS_ID)
       .eq('active', true)
       .order('sort_order', { ascending: true, nullsFirst: false })
@@ -127,46 +224,84 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
   }
 
   async function loadQuote() {
-    const [quoteRes, itemsRes] = await Promise.all([
-      supabase
-        .from('quotes')
-        .select('customer_name, address, tier, status, notes')
-        .eq('id', quoteId)
-        .single(),
-      supabase
-        .from('quote_items')
-        .select('id, service_rate_id, service_name, unit, rate_low, rate_mid, rate_high, quantity')
-        .eq('quote_id', quoteId)
-        .order('sort_order'),
-    ])
+    const { data: q } = await supabase
+      .from('quotes')
+      .select(
+        'salesperson, customer_name, customer_phone, address, quote_type, status, notes, actual_price, discount, tax, sold_price, payment_type, payment_type_other, asphalt_photo_url, concrete_photo_url, line_items, job_id, created_at'
+      )
+      .eq('id', quoteId)
+      .single()
 
-    if (!quoteRes.data) {
+    if (!q) {
       router.replace('/quotes')
       return
     }
 
-    const q = quoteRes.data
-    setCustomerName(q.customer_name)
+    setSalesperson(q.salesperson ?? '')
+    setCustomerName(q.customer_name ?? '')
+    setPhone(q.customer_phone ?? '')
     setAddress(q.address ?? '')
-    setTier(q.tier as Tier)
-    setStatus(q.status as QuoteStatus)
+    setQuoteType((q.quote_type as SurfaceType) ?? 'asphalt')
+    setStatus((q.status as QuoteStatus) ?? 'quoted')
     setNotes(q.notes ?? '')
+    setSubtotal(q.actual_price != null ? String(q.actual_price) : '')
+    setDiscount(q.discount != null ? String(q.discount) : '')
+    if (q.tax != null) {
+      setTax(String(q.tax))
+      setTaxManual(true)
+    }
+    setSoldPrice(q.sold_price != null ? String(q.sold_price) : '')
+    setPaymentType(q.payment_type ?? '')
+    setPaymentOther(q.payment_type_other ?? '')
+    setAsphaltUrl(q.asphalt_photo_url ?? null)
+    setConcreteUrl(q.concrete_photo_url ?? null)
+    setExistingJobId(q.job_id ?? null)
+    if (q.created_at) setQuoteDate(String(q.created_at).slice(0, 10))
     setItems(
-      (itemsRes.data ?? []).map(i => ({
-        tempId: i.id,
-        serviceRateId: i.service_rate_id ?? '',
-        serviceName: i.service_name,
-        unit: i.unit,
-        rateLow: i.rate_low,
-        rateMid: i.rate_mid,
-        rateHigh: i.rate_high,
-        quantity: String(i.quantity),
-      }))
+      Array.isArray(q.line_items)
+        ? q.line_items.map((i: Record<string, unknown>) => ({
+            tempId: crypto.randomUUID(),
+            serviceRateId: String(i.serviceRateId ?? ''),
+            serviceName: String(i.serviceName ?? ''),
+            unit: String(i.unit ?? 'ft²'),
+            category: String(i.category ?? 'asphalt'),
+            rateLow: Number(i.rateLow ?? 0),
+            rateMid: Number(i.rateMid ?? 0),
+            rateHigh: Number(i.rateHigh ?? 0),
+            tier: (i.tier as Tier) ?? 'mid',
+            quantity: i.quantity != null ? String(i.quantity) : '',
+          }))
+        : []
     )
     setLoading(false)
   }
 
-  // ─── Item handlers ──────────────────────────────────────────────────────────
+  // ─── Salesperson handlers ─────────────────────────────────────────────────────
+
+  async function addSalesperson() {
+    const name = newSpName.trim()
+    if (!name) return
+    setSavingSp(true)
+    const { data, error } = await supabase
+      .from('salespersons')
+      .insert({ business_id: BUSINESS_ID, name, active: true })
+      .select('id, name')
+      .single()
+    setSavingSp(false)
+    if (!error && data) {
+      setSalespersons(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)))
+      setSalesperson(data.name)
+      setNewSpName('')
+      setShowAddSp(false)
+    }
+  }
+
+  // ─── Item handlers ────────────────────────────────────────────────────────────
+
+  function changeQuoteType(t: SurfaceType) {
+    setQuoteType(t)
+    setItems(prev => prev.filter(i => matchesType(i.category, t)))
+  }
 
   function addItem(svc: ServiceRate) {
     setItems(prev => [
@@ -176,9 +311,11 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
         serviceRateId: svc.id,
         serviceName: svc.service_name,
         unit: svc.unit,
+        category: svc.category,
         rateLow: svc.rate_low,
         rateMid: svc.rate_mid,
         rateHigh: svc.rate_high,
+        tier: 'mid',
         quantity: '',
       },
     ])
@@ -193,7 +330,19 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
     setItems(prev => prev.map(i => (i.tempId === tempId ? { ...i, quantity: qty } : i)))
   }
 
-  // ─── Save / Delete ──────────────────────────────────────────────────────────
+  function cycleItemTier(tempId: string) {
+    setItems(prev => prev.map(i => (i.tempId === tempId ? { ...i, tier: nextTier(i.tier) } : i)))
+  }
+
+  // ─── Save ─────────────────────────────────────────────────────────────────────
+
+  async function uploadPhoto(file: File, prefix: string): Promise<string | null> {
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const path = `${BUSINESS_ID}/${prefix}-${crypto.randomUUID()}.${ext}`
+    const { error } = await supabase.storage.from('quote-photos').upload(path, file, { upsert: true })
+    if (error) return null
+    return supabase.storage.from('quote-photos').getPublicUrl(path).data.publicUrl
+  }
 
   async function save() {
     if (!customerName.trim()) {
@@ -204,32 +353,63 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
     setSaveError('')
     setSaving(true)
 
-    const quotePayload = {
+    // Upload photos relevant to quote type
+    let aUrl = asphaltUrl
+    let cUrl = concreteUrl
+    try {
+      if (quoteType !== 'concrete' && asphaltFile) aUrl = await uploadPhoto(asphaltFile, 'asphalt')
+      if (quoteType !== 'asphalt' && concreteFile) cUrl = await uploadPhoto(concreteFile, 'concrete')
+    } catch {
+      // non-fatal — proceed without blocking the save
+    }
+
+    const lineItems = items.map(i => ({
+      serviceRateId: i.serviceRateId,
+      serviceName: i.serviceName,
+      unit: i.unit,
+      category: i.category,
+      rateLow: i.rateLow,
+      rateMid: i.rateMid,
+      rateHigh: i.rateHigh,
+      tier: i.tier,
+      quantity: num(i.quantity),
+      lineTotal: num(i.quantity) * rateFor(i, i.tier),
+    }))
+
+    const payload: Record<string, unknown> = {
       business_id: BUSINESS_ID,
+      salesperson: salesperson || null,
       customer_name: customerName.trim(),
+      customer_phone: phone.trim() || null,
       address: address.trim() || null,
-      tier,
+      quote_type: quoteType,
       status,
-      total,
       notes: notes.trim() || null,
+      suggested_total: suggested,
+      suggested_lowest_total: suggestedLowest,
+      actual_price: subtotal === '' ? null : num(subtotal),
+      discount: discount === '' ? null : num(discount),
+      final_quote: subtotal === '' && discount === '' ? null : finalQuote,
+      tax: tax === '' ? null : num(tax),
+      sold_price: soldPrice === '' ? null : num(soldPrice),
+      payment_type: paymentType || null,
+      payment_type_other: paymentType === 'Other' ? paymentOther.trim() || null : null,
+      asphalt_photo_url: quoteType === 'concrete' ? null : aUrl,
+      concrete_photo_url: quoteType === 'asphalt' ? null : cUrl,
+      line_items: lineItems,
+      created_at: new Date(quoteDate + 'T12:00:00').toISOString(),
     }
 
     let savedId = quoteId
-
     if (isEdit) {
-      const { error } = await supabase.from('quotes').update(quotePayload).eq('id', quoteId)
+      const { error } = await supabase.from('quotes').update(payload).eq('id', quoteId)
       if (error) {
         setSaving(false)
         setSaveError('Failed to update quote. Please try again.')
         return
       }
-      await supabase.from('quote_items').delete().eq('quote_id', quoteId)
     } else {
-      const { data, error } = await supabase
-        .from('quotes')
-        .insert(quotePayload)
-        .select('id')
-        .single()
+      const { data, error } = await supabase.from('quotes').insert(payload).select('id').single()
       if (error || !data) {
         setSaving(false)
         setSaveError('Failed to save quote. Please try again.')
@@ -238,33 +418,134 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
       savedId = data.id
     }
 
-    if (items.length > 0 && savedId) {
-      await supabase.from('quote_items').insert(
-        items.map((item, i) => ({
-          quote_id: savedId,
-          service_rate_id: item.serviceRateId || null,
-          service_name: item.serviceName,
-          unit: item.unit,
-          rate_low: item.rateLow,
-          rate_mid: item.rateMid,
-          rate_high: item.rateHigh,
-          quantity: parseFloat(item.quantity) || 0,
-          sort_order: i,
-        }))
-      )
+    // When sold, create a linked job (once)
+    if (status === 'sold' && savedId && !existingJobId) {
+      await createLinkedJob(savedId)
     }
 
     setSaving(false)
     router.push(`/quotes/${savedId}`)
   }
 
-  async function deleteQuote() {
-    setDeleting(true)
-    await supabase.from('quotes').delete().eq('id', quoteId)
-    router.replace('/quotes')
+  async function createLinkedJob(qId: string) {
+    const detail = [
+      phone.trim() ? `Phone: ${phone.trim()}` : null,
+      `Quote type: ${quoteType}`,
+      ...items.map(i => `${i.serviceName} — ${num(i.quantity)} ${i.unit} (${i.tier})`),
+      `Final quote: ${fmtMoney(finalQuote)}`,
+      `Balance due: ${fmtMoney(balanceDue)}`,
+      salesperson ? `Salesperson: ${salesperson}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    const { data: job } = await supabase
+      .from('jobs')
+      .insert({
+        business_id: BUSINESS_ID,
+        title: customerName.trim(),
+        address: address.trim() || null,
+        notes: detail,
+      })
+      .select('id')
+      .single()
+
+    if (job) {
+      await supabase.from('quotes').update({ job_id: job.id }).eq('id', qId)
+      setExistingJobId(job.id)
+    }
   }
 
-  // ─── Render ─────────────────────────────────────────────────────────────────
+  // ─── Render helpers ───────────────────────────────────────────────────────────
+
+  function renderItem(item: QuoteItem) {
+    const rate = rateFor(item, item.tier)
+    return (
+      <Card key={item.tempId} padding="sm">
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-foreground leading-tight truncate">
+                {item.serviceName}
+              </p>
+              <span className="text-sm font-bold text-foreground shrink-0">
+                {fmtMoney(num(item.quantity) * rate)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                placeholder="0"
+                value={item.quantity}
+                onChange={e => setQty(item.tempId, e.target.value)}
+                rightElement={<span className="text-xs text-muted whitespace-nowrap">sq ft</span>}
+              />
+              <button
+                type="button"
+                onClick={() => cycleItemTier(item.tempId)}
+                className={`flex flex-col items-center justify-center gap-0.5 px-2.5 py-1.5 rounded-lg border text-center min-w-[96px] shrink-0 transition-all active:scale-95 ${TIER_META[item.tier].cls}`}
+              >
+                <span className="text-[10px] font-bold tracking-wider leading-none">
+                  {TIER_META[item.tier].label}
+                </span>
+                <span className="text-[9px] opacity-80 whitespace-nowrap leading-none">
+                  {fmtRate(rate, item.unit)}
+                </span>
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => removeItem(item.tempId)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-danger/10 text-muted hover:text-danger transition-colors shrink-0 mt-0.5"
+            aria-label="Remove service"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </Card>
+    )
+  }
+
+  function renderItemsSection() {
+    if (items.length === 0) {
+      return (
+        <Card>
+          <p className="text-sm text-muted text-center py-4">No services added yet.</p>
+        </Card>
+      )
+    }
+    if (quoteType === 'both') {
+      const asphalt = items.filter(i => i.category !== 'concrete')
+      const concrete = items.filter(i => i.category === 'concrete')
+      return (
+        <div className="space-y-4">
+          {asphalt.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold text-muted uppercase tracking-wider">
+                Asphalt Services
+              </p>
+              {asphalt.map(renderItem)}
+            </div>
+          )}
+          {asphalt.length > 0 && concrete.length > 0 && <div className="border-t border-white/8" />}
+          {concrete.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold text-muted uppercase tracking-wider">
+                Concrete Services
+              </p>
+              {concrete.map(renderItem)}
+            </div>
+          )}
+        </div>
+      )
+    }
+    return <div className="space-y-2">{items.map(renderItem)}</div>
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -275,24 +556,55 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
     )
   }
 
+  const pickerServices = services.filter(s => matchesType(s.category, quoteType))
+
   return (
     <div className="min-h-screen bg-base">
-      <PageHeader
-        title={isEdit ? customerName || 'Edit Quote' : 'New Quote'}
-        backHref="/quotes"
-      />
+      <PageHeader title={isEdit ? 'Edit Quote' : 'New Quote'} backHref="/quotes" />
 
       <div className="p-4 space-y-6 pb-40">
+
+        {/* ── Salesperson ── */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">
+            Salesperson
+          </h2>
+          <Card>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <div className="relative">
+                  <select
+                    value={salesperson}
+                    onChange={e => setSalesperson(e.target.value)}
+                    className="w-full h-11 px-3.5 pr-10 bg-surface border border-white/8 rounded-xl text-foreground text-sm appearance-none focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
+                  >
+                    <option value="">Select salesperson…</option>
+                    {salespersons.map(sp => (
+                      <option key={sp.id} value={sp.name}>
+                        {sp.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronRight size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rotate-90 text-muted" />
+                </div>
+              </div>
+              <Button variant="secondary" onClick={() => setShowAddSp(true)}>
+                <UserPlus size={14} />
+                Add More
+              </Button>
+            </div>
+          </Card>
+        </section>
 
         {/* ── Customer ── */}
         <section>
           <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">
-            Customer
+            Customer Info
           </h2>
           <Card>
             <div className="space-y-4">
               <Input
-                label="Name"
+                label="Customer Name"
                 value={customerName}
                 onChange={e => {
                   setCustomerName(e.target.value)
@@ -301,30 +613,50 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
                 placeholder="John Smith"
                 error={nameError}
               />
+              <div>
+                <Input
+                  label="Address"
+                  value={address}
+                  onChange={e => setAddress(e.target.value)}
+                  placeholder="123 Main St, Calgary, AB"
+                />
+                <div className="mt-2">
+                  <LocationButton onAddress={setAddress} />
+                </div>
+              </div>
               <Input
-                label="Address"
-                value={address}
-                onChange={e => setAddress(e.target.value)}
-                placeholder="123 Main St, Calgary, AB"
+                label="Phone"
+                type="tel"
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                placeholder="(403) 555-0123"
+              />
+              <Input
+                label="Date"
+                type="date"
+                value={quoteDate}
+                onChange={e => setQuoteDate(e.target.value)}
               />
             </div>
           </Card>
         </section>
 
-        {/* ── Pricing Tier ── */}
+        {/* ── Quote Type ── */}
         <section>
           <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">
-            Pricing Tier
+            Quote Type
           </h2>
           <Card padding="sm">
             <div className="grid grid-cols-3 gap-2">
-              {TIERS.map(t => (
+              {QUOTE_TYPES.map(t => (
                 <button
                   key={t.value}
                   type="button"
-                  onClick={() => setTier(t.value)}
+                  onClick={() => changeQuoteType(t.value)}
                   className={`py-3 rounded-xl text-sm font-semibold border transition-all ${
-                    tier === t.value ? t.active : INACTIVE_TIER
+                    quoteType === t.value
+                      ? 'bg-accent/15 text-accent border-accent/30'
+                      : 'bg-transparent text-muted border-white/8 hover:bg-white/5'
                   }`}
                 >
                   {t.label}
@@ -337,137 +669,199 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
         {/* ── Services ── */}
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold text-muted uppercase tracking-widest">
-              Services
-            </h2>
+            <h2 className="text-xs font-semibold text-muted uppercase tracking-widest">Services</h2>
             <Button size="sm" variant="secondary" onClick={() => setShowPicker(true)}>
               <Plus size={14} />
               Add Service
             </Button>
           </div>
-
-          {items.length === 0 ? (
-            <Card>
-              <p className="text-sm text-muted text-center py-4">No services added yet.</p>
-            </Card>
-          ) : (
-            <div className="space-y-2">
-              {items.map(item => {
-                const rate = getRate(item, tier)
-                const qty = parseFloat(item.quantity) || 0
-                return (
-                  <Card key={item.tempId} padding="sm">
-                    <div className="flex items-start gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-baseline justify-between gap-2 mb-1">
-                          <p className="text-sm font-semibold text-foreground leading-tight truncate">
-                            {item.serviceName}
-                          </p>
-                          <span className="text-sm font-bold text-foreground shrink-0">
-                            {fmtMoney(qty * rate)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted mb-2">{fmtRate(rate, item.unit)}</p>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="any"
-                          placeholder="0"
-                          value={item.quantity}
-                          onChange={e => setQty(item.tempId, e.target.value)}
-                          rightElement={
-                            <span className="text-xs text-muted whitespace-nowrap">
-                              {item.unit}
-                            </span>
-                          }
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeItem(item.tempId)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-danger/10 text-muted hover:text-danger transition-colors shrink-0 mt-0.5"
-                        aria-label="Remove service"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </Card>
-                )
-              })}
-            </div>
-          )}
+          {renderItemsSection()}
         </section>
 
-        {/* ── Total ── */}
-        <div className="flex items-center justify-between px-4 py-4 bg-accent/10 border border-accent/20 rounded-xl">
-          <span className="text-sm font-semibold text-foreground">Quote Total</span>
-          <span className="text-2xl font-bold text-accent">{fmtMoney(total)}</span>
-        </div>
-
-        {/* ── Details ── */}
+        {/* ── Totals ── */}
         <section>
-          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">
-            Details
-          </h2>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">Totals</h2>
           <Card>
-            <div className="space-y-4">
-              <Select
-                label="Status"
-                options={STATUS_OPTIONS}
-                value={status}
-                onChange={e => setStatus(e.target.value as QuoteStatus)}
-              />
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-foreground">Notes</label>
-                <textarea
-                  value={notes}
-                  onChange={e => setNotes(e.target.value)}
-                  placeholder="Additional notes…"
-                  rows={3}
-                  className="w-full px-3.5 py-3 bg-surface border border-white/8 rounded-xl text-foreground placeholder:text-muted text-sm focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors resize-none"
-                />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted">Suggested</span>
+                <span className="text-sm font-semibold text-foreground">{fmtMoney(suggested)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted">Suggested Lowest</span>
+                <span className="text-sm font-semibold text-foreground">{fmtMoney(suggestedLowest)}</span>
+              </div>
+
+              <div className="border-t border-white/8" />
+
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm text-foreground">Quote Subtotal</label>
+                <div className="w-36">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="0.00"
+                    value={subtotal}
+                    onChange={e => setSubtotal(e.target.value)}
+                    className="text-right"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm text-foreground">Quote Discount</label>
+                <div className="w-36">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="0.00"
+                    value={discount}
+                    onChange={e => setDiscount(e.target.value)}
+                    className="text-right"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-foreground font-medium">Final Quote</span>
+                <span className="text-sm font-bold text-foreground">{fmtMoney(finalQuote)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm text-foreground">Tax (5%)</label>
+                <div className="w-36">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="0.00"
+                    value={tax}
+                    onChange={e => {
+                      setTaxManual(true)
+                      setTax(e.target.value)
+                    }}
+                    className="text-right"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between px-3.5 py-3 bg-accent/10 border border-accent/20 rounded-xl">
+                <span className="text-sm font-semibold text-foreground">Balance Due</span>
+                <span className="text-2xl font-bold text-accent">{fmtMoney(balanceDue)}</span>
+              </div>
+
+              <div className="border-t border-white/8" />
+
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm text-foreground">Sold</label>
+                <div className="w-36">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="0.00"
+                    value={soldPrice}
+                    onChange={e => setSoldPrice(e.target.value)}
+                    className="text-right"
+                  />
+                </div>
               </div>
             </div>
           </Card>
         </section>
 
-        {/* ── Delete (edit only) ── */}
-        {isEdit && (
-          <section>
-            {!confirmDel ? (
-              <Button
-                fullWidth
-                variant="ghost"
-                className="text-danger hover:bg-danger/10"
-                onClick={() => setConfirmDel(true)}
-              >
-                <Trash2 size={14} />
-                Delete Quote
-              </Button>
-            ) : (
-              <Card>
-                <p className="text-sm text-center text-muted mb-3">
-                  Permanently delete this quote?
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button variant="secondary" onClick={() => setConfirmDel(false)}>
-                    Cancel
-                  </Button>
-                  <Button variant="danger" onClick={deleteQuote} loading={deleting}>
-                    Delete
-                  </Button>
-                </div>
-              </Card>
+        {/* ── Payment ── */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">
+            Payment Type
+          </h2>
+          <Card>
+            <div className="grid grid-cols-3 gap-2">
+              {PAYMENT_TYPES.map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPaymentType(p)}
+                  className={`py-2.5 rounded-xl text-sm font-medium border transition-all ${
+                    paymentType === p
+                      ? 'bg-accent/15 text-accent border-accent/30'
+                      : 'bg-transparent text-muted border-white/8 hover:bg-white/5'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            {paymentType === 'Other' && (
+              <div className="mt-3">
+                <Input
+                  placeholder="Custom payment method"
+                  value={paymentOther}
+                  onChange={e => setPaymentOther(e.target.value)}
+                />
+              </div>
             )}
-          </section>
-        )}
+          </Card>
+        </section>
 
-        {saveError && (
-          <p className="text-sm text-danger text-center">{saveError}</p>
-        )}
+        {/* ── Status ── */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">Status</h2>
+          <button
+            type="button"
+            onClick={() => setStatus(STATUS_CYCLE[(STATUS_CYCLE.indexOf(status) + 1) % STATUS_CYCLE.length])}
+            className={`w-full py-3 rounded-xl text-sm font-semibold border transition-all active:scale-[0.99] ${STATUS_META[status].cls}`}
+          >
+            {STATUS_META[status].label}
+          </button>
+        </section>
+
+        {/* ── Photos ── */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">Photos</h2>
+          <Card>
+            <div className="space-y-4">
+              {quoteType !== 'concrete' && (
+                <PhotoUpload
+                  label="Asphalt Quote Card Photo"
+                  value={asphaltUrl}
+                  previewUrl={asphaltPreview}
+                  onChange={f => {
+                    setAsphaltFile(f)
+                    if (!f) setAsphaltUrl(null)
+                  }}
+                />
+              )}
+              {quoteType !== 'asphalt' && (
+                <PhotoUpload
+                  label="Concrete Quote Card Photo"
+                  value={concreteUrl}
+                  previewUrl={concretePreview}
+                  onChange={f => {
+                    setConcreteFile(f)
+                    if (!f) setConcreteUrl(null)
+                  }}
+                />
+              )}
+            </div>
+          </Card>
+        </section>
+
+        {/* ── Notes ── */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted uppercase tracking-widest mb-3">Notes</h2>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="Additional notes…"
+            rows={3}
+            className="w-full px-3.5 py-3 bg-surface border border-white/8 rounded-xl text-foreground placeholder:text-muted text-sm focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors resize-none"
+          />
+        </section>
+
+        {saveError && <p className="text-sm text-danger text-center">{saveError}</p>}
       </div>
 
-      {/* ── Sticky save bar (sits above bottom nav) ── */}
+      {/* ── Sticky save bar ── */}
       <div className="fixed bottom-20 left-0 right-0 z-40 px-4 pt-2 pb-2 bg-base border-t border-white/8">
         <Button fullWidth size="lg" onClick={save} loading={saving}>
           {isEdit ? 'Update Quote' : 'Save Quote'}
@@ -476,13 +870,13 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
 
       {/* ── Service picker modal ── */}
       <Modal open={showPicker} onClose={() => setShowPicker(false)} title="Add Service">
-        {services.length === 0 ? (
+        {pickerServices.length === 0 ? (
           <p className="text-sm text-muted text-center py-6">
-            No active services. Configure them in Settings.
+            No matching services. Configure them in Settings.
           </p>
         ) : (
           <div className="space-y-1">
-            {services.map(svc => (
+            {pickerServices.map(svc => (
               <button
                 key={svc.id}
                 type="button"
@@ -491,16 +885,31 @@ export default function QuoteBuilder({ quoteId }: QuoteBuilderProps) {
               >
                 <div>
                   <p className="text-sm font-semibold text-foreground">{svc.service_name}</p>
-                  <p className="text-xs text-muted">{svc.unit}</p>
+                  <p className="text-xs text-muted capitalize">{svc.category}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 text-muted">
-                  <span className="text-xs">Mid: ${svc.rate_mid.toFixed(2)}</span>
+                  <span className="text-xs">Mid: {fmtRate(svc.rate_mid, svc.unit)}</span>
                   <ChevronRight size={14} />
                 </div>
               </button>
             ))}
           </div>
         )}
+      </Modal>
+
+      {/* ── Add salesperson modal ── */}
+      <Modal open={showAddSp} onClose={() => setShowAddSp(false)} title="Add Salesperson">
+        <div className="space-y-4">
+          <Input
+            label="Name"
+            value={newSpName}
+            onChange={e => setNewSpName(e.target.value)}
+            placeholder="Jane Doe"
+          />
+          <Button fullWidth onClick={addSalesperson} loading={savingSp}>
+            Add Salesperson
+          </Button>
+        </div>
       </Modal>
     </div>
   )
